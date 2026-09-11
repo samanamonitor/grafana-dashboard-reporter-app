@@ -12,8 +12,9 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/config"
 	"github.com/mahendrapaipuri/authlib/authz"
-	"github.com/samanamonitor/grafana-dashboard-reporter-app/pkg/plugin/config"
+	plugin_config "github.com/samanamonitor/grafana-dashboard-reporter-app/pkg/plugin/config"
 	"github.com/samanamonitor/grafana-dashboard-reporter-app/pkg/plugin/dashboard"
 	"github.com/samanamonitor/grafana-dashboard-reporter-app/pkg/plugin/helpers"
 	"github.com/samanamonitor/grafana-dashboard-reporter-app/pkg/plugin/report"
@@ -51,7 +52,7 @@ func (app *App) convertPanelIDs(ids []string) []string {
 }
 
 // updateConfig updates the default config from query parameters.
-func (app *App) updateConfig(req *http.Request, conf *config.Config) {
+func (app *App) updateConfig(req *http.Request, conf *plugin_config.Config) {
 	if req.URL.Query().Has("theme") {
 		conf.Theme = req.URL.Query().Get("theme")
 	}
@@ -66,6 +67,10 @@ func (app *App) updateConfig(req *http.Request, conf *config.Config) {
 
 	if req.URL.Query().Has("dashboardMode") {
 		conf.DashboardMode = req.URL.Query().Get("dashboardMode")
+	}
+
+	if req.URL.Query().Has("format") {
+		conf.ReportFormat = req.URL.Query().Get("format")
 	}
 
 	if req.URL.Query().Has("timeZone") {
@@ -112,7 +117,7 @@ func (app *App) featureTogglesEnabled(ctx context.Context) bool {
 	}
 
 	// Get Grafana config from context
-	cfg := backend.GrafanaConfigFromContext(ctx)
+	cfg := config.GrafanaConfigFromContext(ctx)
 
 	// For grafana >= 10.4.4 check for feature toggles
 	if cfg.FeatureToggles().IsEnabled(accessControlFeatureFlag) && cfg.FeatureToggles().IsEnabled(idForwardingFlag) {
@@ -124,7 +129,7 @@ func (app *App) featureTogglesEnabled(ctx context.Context) bool {
 
 // grafanaAppURL returns the Grafana's App URL. User configured URL has higher
 // precedence than the App URL in the request's context.
-func (app *App) grafanaAppURL(grafanaConfig *backend.GrafanaCfg) (string, error) {
+func (app *App) grafanaAppURL(grafanaConfig *config.GrafanaCfg) (string, error) {
 	var grafanaAppURL string
 
 	var err error
@@ -141,9 +146,9 @@ func (app *App) grafanaAppURL(grafanaConfig *backend.GrafanaCfg) (string, error)
 	return strings.TrimSuffix(grafanaAppURL, "/"), nil
 }
 
-// dashboardModel fetches dashboard JSON model from Grafana API.
-func (app *App) dashboardModel(ctx context.Context, appURL, dashUID string, authHeader http.Header, values url.Values) (*dashboard.Model, error) {
-	dashURL := fmt.Sprintf("%s/api/dashboards/uid/%s", appURL, dashUID)
+// dashboardFolder fetches current dashboard folder from Grafana API.
+func (app *App) dashboardFolder(ctx context.Context, appURL, folderUID string, authHeader http.Header) ([]string, error) {
+	dashURL := fmt.Sprintf("%s/api/folders/%s", appURL, folderUID)
 
 	// Create a new GET request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dashURL, nil)
@@ -179,6 +184,61 @@ func (app *App) dashboardModel(ctx context.Context, appURL, dashUID string, auth
 		)
 	}
 
+	var folder dashboard.Folder
+
+	// Read data into dashboard.Model
+	err = json.Unmarshal(body, &folder) //nolint:musttag
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body into dashboard folder: %w", err)
+	}
+
+	// Get folder parents
+	var parentUIDs []string
+	for _, parent := range folder.Parents {
+		parentUIDs = append(parentUIDs, parent.UID)
+	}
+
+	return parentUIDs, nil
+}
+
+// dashboardModel fetches dashboard JSON model from Grafana API.
+func (app *App) dashboardModel(ctx context.Context, appURL, dashUID string, authHeader http.Header, values url.Values) (*dashboard.Model, error) {
+	dashURL := fmt.Sprintf("%s/api/dashboards/uid/%s", appURL, dashUID)
+
+	// Create a new GET request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dashURL, nil) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("error creating request for %s: %w", dashURL, err)
+	}
+
+	// Forward auth headers
+	for name, values := range authHeader {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+
+	// Make request
+	resp, err := app.httpClient.Do(req) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("error executing request for %s: %w", dashURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body from %s: %w", dashURL, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"failed to fetch dashboard model: URL: %s. Status: %s, message: %s",
+			dashURL,
+			resp.Status,
+			string(body),
+		)
+	}
+
 	var model dashboard.Model
 
 	// Read data into dashboard.Model
@@ -189,6 +249,18 @@ func (app *App) dashboardModel(ctx context.Context, appURL, dashUID string, auth
 
 	// Add template variables to model
 	model.Dashboard.Variables = values
+
+	// If dashboard is in folder, fetch all parents. Because if permissions is set on
+	// parent folder, they are inherited in the nested dashboards and so, we need to
+	// provide the top level one where permissions are set
+	if model.Meta.FolderUID != "" {
+		folderUIDs, err := app.dashboardFolder(ctx, appURL, model.Meta.FolderUID, authHeader)
+		if err != nil {
+			return nil, fmt.Errorf("error fetching dashboard folder: %w", err)
+		}
+
+		model.Meta.ParentFolderUIDs = folderUIDs
+	}
 
 	return &model, nil
 }
@@ -226,7 +298,7 @@ func (app *App) handleReport(w http.ResponseWriter, req *http.Request) {
 	// Add dash uid and user to logger
 	ctxLogger = ctxLogger.With("user", currentUser, "dash_uid", dashboardUID)
 
-	grafanaConfig := backend.GrafanaConfigFromContext(req.Context())
+	grafanaConfig := config.GrafanaConfigFromContext(req.Context())
 
 	// Get Grafana App URL by looking both at passed config and user defined config
 	grafanaAppURL, err := app.grafanaAppURL(grafanaConfig)
@@ -313,6 +385,15 @@ func (app *App) handleReport(w http.ResponseWriter, req *http.Request) {
 			Attr: "uid",
 			ID:   model.Meta.FolderUID,
 		})
+
+		// If there are parents, add them too
+		for _, uid := range model.Meta.ParentFolderUIDs {
+			resources = append(resources, authz.Resource{
+				Kind: "folders",
+				Attr: "uid",
+				ID:   uid,
+			})
+		}
 	}
 
 	// If the required feature flags are enabled, check if user has access to the resource

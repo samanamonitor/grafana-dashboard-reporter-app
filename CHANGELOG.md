@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.13.0
+
+- feat: Support HTML report format [#561](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/561)
+
+## 1.12.0
+
+- ci: Add Grafana 13.x in e2e tests matrix [#541](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/541)
+- fix: Use all nested folders for permissions check [#538](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/538)
+- chore: Add GF_PLUGINS_FORWARD_HOST_ENV_VARS config to Grafana [#496](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/496)
+
+## 1.11.0
+
+- Take into account new repeated panel naming scheme in Grafana 12.x [#483](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/483)
+
 ## 1.10.1
 
 - fix: When data element not found, do not return error [#464](https://github.com/mahendrapaipuri/grafana-dashboard-reporter-app/pull/464)

@@ -96,7 +96,17 @@ func (d *Dashboard) panelMetaData(_ context.Context) ([]any, error) {
 	// We dont need to load data from backend datasources to get panels metadata.
 	// Similarly there is no need of Grafana live for fetching metadata.
 	// So block both of them as they can hinder firing networkIdle event.
-	err := tab.NavigateAndWaitFor(dashURL, headers, "networkIdle", []string{"*/api/ds/query*", "*/api/live/ws"})
+	//
+	// When there are repeated panels/rows based on query result, the URLs that are
+	// generated to make queries are of form
+	// - /api/datasources/uid/testprometheusds/resources/api/v1/query?query=up&time=1774520344
+	// - /api/datasources/uid/testprometheusds/resources/api/v1/label/cpu/values
+	// which will not be captured by the URL patterns we are using here. So, blocking just
+	// query URL for dashboards should not impact the loading of all repeated panels/rows
+	// in the dashboard
+	//
+	// Testing URL patterns: https://urlpattern.com/
+	err := tab.NavigateAndWaitFor(dashURL, headers, "networkIdle", []string{"*://*:*/api/ds/query*", "*://*:*/api/live/ws"})
 	if err != nil {
 		return nil, fmt.Errorf("NavigateAndWaitFor: %w", err)
 	}
@@ -243,12 +253,15 @@ func (d *Dashboard) createPanels(dashData []any) ([]Panel, error) {
 			}
 		}
 
-		// Check if panel has repeat variable and repeat variable is set to $__all, ignore all
-		// clones except the first one
-		// NOTE: Workaround until https://github.com/grafana/grafana/issues/108754 gets fixed
-		if p.Repeat != "" && d.model.Dashboard.Variables.Get("var-"+p.Repeat) == "$__all" && !strings.Contains(p.ID, "clone-0") {
-			continue
-		}
+		// UPDATE 20260209
+		// No need of hacking anymore. See the comment in renderer.go file
+		//
+		// // Check if panel has repeat variable and repeat variable is set to $__all, ignore all
+		// // clones except the first one
+		// // NOTE: Workaround until https://github.com/grafana/grafana/issues/108754 gets fixed
+		// if p.Repeat != "" && d.model.Dashboard.Variables.Get("var-"+p.Repeat) == "$__all" && !strings.Contains(p.ID, "clone-0") {
+		// 	continue
+		// }
 
 		// Create panel model and append to panels
 		panels = append(panels, p)
