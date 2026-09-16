@@ -20,11 +20,14 @@ This plugin app depends on following:
 [`grafana-image-renderer`](https://github.com/grafana/grafana-image-renderer) to render
 panels into PNG files
 
-- If `grafana-image-renderer` is installed as Grafana plugin, no other external
+- If `grafana-image-renderer < 4.0` is installed as Grafana plugin, no other external
 dependencies are required for the plugin to work. `grafana-image-renderer` ships the
 plugin with a standalone instance of `chromium` and the same `chromium` will be used
-to render PDF reports. If `grafana-image-renderer` is deployed as a service on a
-different host, `chromium` must be installed on the host where Grafana is installed.
+to render PDF reports. For `grafana-image-renderer >= 4`, the plugin must be deployed as
+an external service and hence, `chromium` must be installed on the host where Grafana is
+installed. It is also possible to use a remote headless chrome instance without having to
+install `chromium` on the host/container where Grafana is running. Please consult
+[Additional Settings](#additional-settings) section on how to set up remote chrome instance.
 
 > [!IMPORTANT]
 > `grafana-image-renderer` advises to install `chromium` to ensure that all the
@@ -39,7 +42,7 @@ or use Grafana image renderer as an external service.
 
 ## Installation
 
-### Installation via `grafana-cli`
+### Installation via `grafana cli`
 
 Grafana Enterprise offers a very similar plugin [reports](https://grafana.com/docs/grafana/latest/dashboards/create-reports/#export-dashboard-as-pdf)
 and hence, their plugin policies do not allow to publish the current plugin in their
@@ -56,13 +59,13 @@ However, it is still possible to install this plugin using `grafana-cli` by over
 For example following command will install latest version of plugin
 
 ```bash
-VERSION=1.10.1; grafana-cli --pluginUrl "https://github.com/samanamonitor/grafana-dashboard-reporter-app/releases/download/v${VERSION}/grafana-dashboardreporter-app-${VERSION}.zip" plugins install grafana-dashboardreporter-app
+VERSION=1.12.0; grafana cli --pluginUrl "https://github.com/samanamonitor/grafana-dashboard-reporter-app/releases/download/v${VERSION}/grafana-dashboardreporter-app-${VERSION}.zip" plugins install grafana-dashboardreporter-app
 ```
 
 Similarly, `nightly` version can be installed suing
 
 ```bash
-grafana-cli --pluginUrl  https://github.com/samanamonitor/grafana-dashboard-reporter-app/releases/download/nightly/grafana-dashboardreporter-app-nightly.zip plugins install grafana-dashboardreporter-app
+grafana cli --pluginUrl  https://github.com/samanamonitor/grafana-dashboard-reporter-app/releases/download/nightly/grafana-dashboardreporter-app-nightly.zip plugins install grafana-dashboardreporter-app
 ```
 
 > [!TIP]
@@ -117,6 +120,17 @@ must be added to `auth` section of Grafana.
 ```ini
 [auth]
 managed_service_accounts_enabled = true
+```
+
+> [!IMPORTANT]
+> From Grafana v11.4.0+, host environment variables are not forwarded to the plugin process
+by default. This means `PATH` environment variable in unset and hence, installed `chromium`
+or `google-chrome` can not be found by the plugin. In order to forward host environment
+variables, add the following configuration in `plugins` section.
+
+```ini
+[plugins]
+forward_host_env_vars = mahendrapaipuri-dashboardreporter-app
 ```
 
 More details can be found in Grafana [docs](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/#managed_service_accounts_enabled)
@@ -187,6 +201,17 @@ To resume, the configuration settings can be set in the following ways:
 - Using provisioning through a YAML file at install time
 - Using environment variables set on Grafana server at install time
 - Using Grafana UI at runtime
+
+> [!IMPORTANT]
+> From Grafana v11.4.0+, host environment variables are not forwarded to the plugin process
+by default. If the plugin is configured using environment variables,
+add the following configuration in `plugins` section so that Grafana will forward the
+plugin specific environment variables to plugin process correctly.
+
+```ini
+[plugins]
+forward_host_env_vars = mahendrapaipuri-dashboardreporter-app
+```
 
 The configuration options set in the above stated methods are applied `Org` wide
 in Grafana acting as baseline configuration for the plugin. Hence, these settings can
@@ -260,6 +285,9 @@ as well to render the panels in that given time zone.
 
 The following settings are advanced settings that allow to customize the header and footer
 of the report using custom HTML templates.
+
+- `file:reportFormat; env:GF_REPORTER_PLUGIN_REPORT_FORMAT; ui:Report Format`:
+  Format of the generated report. Currently supports PDF and HTML. Default is PDF.
 
 - `file:headerTemplate; env:GF_REPORTER_PLUGIN_REPORT_HEADER_TEMPLATE; ui:Header Template`:
   HTML template that will be added as header to the report. Mutually exclusive with
@@ -341,6 +369,9 @@ to set these values. Currently, the supported query parameters are:
 
 - Query field for dashboard mode is `dashboardMode` and it takes either `default` or `full`
   as value. Example is `<grafanaAppUrl>/api/plugins/grafana-dashboardreporter-app/resources/report?dashUid=<UID of dashboard>&dashboardMode=full`
+
+- Query field for report format is `format` and it takes either `html` or `pdf`
+  as value. Example is `<grafanaAppUrl>/api/plugins/mahendrapaipuri-dashboardreporter-app/resources/report?dashUid=<UID of dashboard>&format=html`
 
 - Query field for dashboard mode is `timeZone` and it takes a value in [IANA format](https://www.iana.org/time-zones)
   as value. **Note** that it should be encoded to escape URL specific characters. For example
@@ -594,12 +625,9 @@ possible to set them using either environment variables or Grafana UI.
 ## Limitations
 
 - Due to a [bug](https://github.com/grafana/grafana/issues/108754) in Grafana, there exists
-a limitation for the reports generated for dashboards with repeated panels using query based variable.
-If variable `All` in selected for generating report with repeated panels, all the data will be
-included in the same panel instead of generating a panel for each different variable. This cannot
-be fixed until the bug in upstream Grafana is fixed. A workaround is to select all the variables
-in the dashboard instead of selecting `All` which will generate different panel for each variable
-in the report.
+a limitation for the reports generated for dashboards with repeated panels/rows using query based variable.
+This bug exists in Grafana 11.3.x, 11.4.x and 11.5.x versions and it seemed to be fixed in
+the later versions.
 
 - Including tabular data for the datasources that rely on Grafana Live (like MQTT) is not supported.
 Grafana does not include authentication headers in the websocket handshake protocol and thus, it is
@@ -622,7 +650,7 @@ error messages will be as follows:
 
   To solve this issue set environment variables `GF_RENDERER_PLUGIN_IGNORE_HTTPS_ERRORS=true`
   and `IGNORE_HTTPS_ERRORS=true` for the `grafana-image-renderer < 5` and for `grafana-image-renderer >= 5`,
-	set variable `BROWSER_FLAG=--ignore-certificate-errors` on renderer service.
+  set variable `BROWSER_FLAG=--ignore-certificate-errors` on renderer service.
 
 - If `chromium` fails to run, it suggests that there are missing dependent libraries on
 the host. In that case, we advise to install `chromium` on the machine which will
